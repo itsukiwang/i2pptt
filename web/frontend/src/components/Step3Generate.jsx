@@ -267,21 +267,19 @@ export function Step3Generate({ t, jobId, job }) {
           {(t.lang || 'en') === 'zh' ? '开始新任务 ⏎' : 'Start New Job ⏎'}
         </button>
         <button
-          className={`primary ${isGenerating ? 'loading' : ''}`}
+          className={`primary-soft ${isGenerating ? 'loading' : ''}`}
           onClick={startGeneration}
           disabled={isGenerating || !job?.md_path || !job?.directory || !job?.filename}
         >
-          {isGenerating ? ((t.lang || 'en') === 'zh' ? '生成中...' : 'Generating...') : (t.step3.generate + ' ▶')}
+          {isGenerating ? ((t.lang || 'en') === 'zh' ? '生成中...' : 'Generating...') : t.step3.generate}
         </button>
-        {downloadUrl && (
-          <button
-            className="primary-soft"
-            onClick={handleDownload}
-            disabled={!downloadUrl || isGenerating}
-          >
-            {(t.lang || 'en') === 'zh' ? '下载 PPT ⬇' : 'Download PPT ⬇'}
-          </button>
-        )}
+        <button
+          className="primary"
+          onClick={handleDownload}
+          disabled={!downloadUrl || isGenerating}
+        >
+          {(t.lang || 'en') === 'zh' ? '下载 PPT ⬇' : 'Download PPT ⬇'}
+        </button>
       </div>
     </div>
   );

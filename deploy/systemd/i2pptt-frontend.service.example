@@ -1,0 +1,19 @@
+[Unit]
+Description=i2pptt Frontend Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/i2pptt/web/frontend
+Environment="PATH=/usr/bin:/usr/local/bin"
+Environment="I2PPTT_VITE_BASE_PATH=/i2pptt/"
+Environment="VITE_BASE_PATH=/i2pptt/"
+ExecStart=/usr/bin/npm run dev -- --host --port 5174
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,60 @@
+; i2pptt CLI configuration
+; NOTE:
+; - All `_in` suffix values are inches.
+; - Thresholds use width/height ratio (e.g., 16/9).
+; - Fonts use installed family names (e.g., Arial).
+
+[scan]
+; Scan subdirectories recursively
+recursive = true
+; Allowed image formats
+supported_formats = png,jpg,jpeg,gif,webp,bmp
+
+[grouping]
+; directory | filename | mixed
+strategy = mixed         ; directory | filename | mixed
+; Primary filename separator (also split by space, '-', '_', '.')
+filename_separator = _
+; Max heading depth (1..3): directories first, then filename tokens/LCP
+max_levels = 3           ; max heading depth (1..3), grouping by path then filename tokens
+
+[ppt]
+; Legacy: not used for orientation-specific layouts (kept for compatibility)
+max_images_per_slide = 4
+; auto | horizontal | vertical | square | mixed (reserved)
+layout_strategy = auto   ; auto | horizontal | vertical | square | mixed
+language = zh_CN
+; PPT slide size
+size = 16:9              ; 16:9 | 4:3 | custom
+; If size=custom, set width/height in inches (both required)
+width_in =
+height_in =
+; Per-slide capacities
+landscape_per_slide = 3  ; vertical stack per page
+portrait_per_slide = 4   ; horizontal row per page
+square_per_slide = 4     ; 2x2 grid per page
+; Orientation thresholds by aspect ratio (width/height)
+portrait_threshold = 4/5   ; r < portrait_threshold => portrait
+landscape_threshold = 16/9 ; r > landscape_threshold => landscape
+; Fonts (points)
+title_font_size = 28
+content_font_size = 10
+; Fonts (names)
+title_font_name = Arial
+content_font_name = Arial
+; Title box geometry (inches)
+title_left_in = 0.5
+; distance from left edge to title box left side
+title_top_in = 0.3
+; distance from top edge to title box top side
+title_width_in = 12.4
+; title box width
+title_height_in = 1.25
+; title box height
+; Content area geometry (inches) for images
+content_left_in = 0.5     ; image content area left
+content_top_in = 1.6      ; image content area top (below title)
+content_width_in = 12.33  ; image content area width
+content_height_in = 5.4   ; image content area height
+
+

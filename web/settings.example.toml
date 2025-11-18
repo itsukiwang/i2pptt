@@ -1,0 +1,8 @@
+[server]
+root_path = "/i2pptt"
+workers = 4
+
+[cli]
+root = "../cli"
+
+

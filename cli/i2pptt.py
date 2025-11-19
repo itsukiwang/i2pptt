@@ -81,9 +81,10 @@ class CliConfig:
     title_width_in: float = 12.4
     title_height_in: float = 1.25
     content_left_in: float = 0.5
-    content_top_in: float = 1.6
-    content_width_in: float = 12.33
-    content_height_in: float = 5.4
+    content_top_in: float = 0.8
+    content_width_in: float = 13.0
+    content_height_in: float = 6.5
+    template_path: str = ""
 
     @staticmethod
     def load(path: Optional[str]) -> "CliConfig":
@@ -134,11 +135,12 @@ class CliConfig:
         title_width_in = cfg.getfloat("ppt", "title_width_in", fallback=12.4)
         title_height_in = cfg.getfloat("ppt", "title_height_in", fallback=1.25)
         content_left_in = cfg.getfloat("ppt", "content_left_in", fallback=0.5)
-        content_top_in = cfg.getfloat("ppt", "content_top_in", fallback=1.6)
-        content_width_in = cfg.getfloat("ppt", "content_width_in", fallback=12.33)
-        content_height_in = cfg.getfloat("ppt", "content_height_in", fallback=5.4)
+        content_top_in = cfg.getfloat("ppt", "content_top_in", fallback=0.8)
+        content_width_in = cfg.getfloat("ppt", "content_width_in", fallback=13.0)
+        content_height_in = cfg.getfloat("ppt", "content_height_in", fallback=6.5)
         title_font_name = cfg.get("ppt", "title_font_name", fallback="").strip()
         content_font_name = cfg.get("ppt", "content_font_name", fallback="").strip()
+        template_path = cfg.get("ppt", "template_path", fallback="").strip()
 
         return CliConfig(
             recursive=recursive,
@@ -169,6 +171,7 @@ class CliConfig:
             content_height_in=content_height_in,
             title_font_name=title_font_name,
             content_font_name=content_font_name,
+            template_path=template_path,
         )
 
     def supported_extensions(self, override_formats: Optional[str]) -> List[str]:
@@ -315,14 +318,29 @@ class PPTOptions:
     title_width_in: float = 12.4
     title_height_in: float = 1.25
     content_left_in: float = 0.5
-    content_top_in: float = 1.6
-    content_width_in: float = 12.33
-    content_height_in: float = 5.4
+    content_top_in: float = 0.8
+    content_width_in: float = 13.0
+    content_height_in: float = 6.5
+    template_path: str = ""
 
 
 class PPTGenerator:
     def __init__(self, options: Optional[PPTOptions] = None) -> None:
         self.options = options or PPTOptions()
+
+    def _find_blank_layout(self, prs: Presentation) -> int:
+        """Find blank layout (no placeholders) to avoid default font sizes."""
+        try:
+            for idx, layout in enumerate(prs.slide_layouts):
+                try:
+                    if len(layout.placeholders) == 0:
+                        return idx
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        # Fallback to first layout
+        return 0
 
     def _find_title_only_layout(self, prs: Presentation) -> int:
         """Return index of a 'Title Only' layout if available; otherwise fallback."""
@@ -350,18 +368,12 @@ class PPTGenerator:
             best_idx = None
         return best_idx if best_idx is not None else self._slide_layout_for(prs)
 
-    def _remove_non_title_placeholders(self, slide) -> None:
-        """Remove all placeholder shapes except the title one."""
-        try:
-            title_shape = slide.shapes.title
-        except Exception:
-            title_shape = None
-        # Collect shapes to delete
+    def _remove_all_placeholders(self, slide) -> None:
+        """Remove all placeholder shapes from the slide (including title and subtitle)."""
         to_delete = []
         for shape in list(slide.shapes):
             try:
-                if shape is title_shape:
-                    continue
+                # Only delete placeholders (not regular shapes we added)
                 if getattr(shape, "is_placeholder", False):
                     to_delete.append(shape)
             except Exception:
@@ -374,51 +386,305 @@ class PPTGenerator:
             except Exception:
                 continue
 
+    def _remove_non_title_placeholders(self, slide, title_shape=None, title_placeholder_id=None) -> None:
+        """Remove all placeholder shapes except the title one."""
+        if title_shape is None:
+            try:
+                title_shape = slide.shapes.title
+            except Exception:
+                title_shape = None
+        # Collect shapes to delete
+        to_delete = []
+        for shape in list(slide.shapes):
+            try:
+                # Skip title shape itself
+                if shape is title_shape:
+                    continue
+                # Only delete placeholders (not regular shapes we added)
+                if getattr(shape, "is_placeholder", False):
+                    # Check if it's a title placeholder (should not delete)
+                    try:
+                        if hasattr(shape, 'placeholder_format'):
+                            pf = shape.placeholder_format
+                            # Check by type
+                            if PP_PLACEHOLDER and hasattr(pf, 'type') and pf.type == PP_PLACEHOLDER.TITLE:
+                                continue  # Don't delete title placeholder
+                            # Also check by ID if provided
+                            if title_placeholder_id is not None and hasattr(pf, 'idx') and pf.idx == title_placeholder_id:
+                                continue  # Don't delete title placeholder
+                    except Exception:
+                        pass
+                    to_delete.append(shape)
+            except Exception:
+                continue
+        # Delete safely
+        for shape in to_delete:
+            try:
+                sp = shape._element  # lxml element
+                sp.getparent().remove(sp)
+            except Exception:
+                continue
+
+    def _create_cover_page(self, prs: Presentation, slides: List[Dict[str, object]]) -> None:
+        """Create cover page with group statistics and current date."""
+        from collections import defaultdict
+        from datetime import datetime
+        
+        # Extract first-level groups and count images
+        group_counts: Dict[str, int] = defaultdict(int)
+        total_images = 0
+        
+        for slide_spec in slides:
+            breadcrumb = str(slide_spec.get("breadcrumb", ""))
+            image_paths = slide_spec.get("images", [])
+            image_count = len(image_paths) if isinstance(image_paths, list) else 0
+            total_images += image_count
+            
+            # Extract first-level group from breadcrumb (format: "一级 / 二级 / 三级")
+            if breadcrumb:
+                first_level = breadcrumb.split(" / ")[0] if " / " in breadcrumb else breadcrumb
+                group_counts[first_level] += image_count
+        
+        # Create cover slide
+        layout_idx = self._find_blank_layout(prs)
+        slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+        self._remove_all_placeholders(slide)
+        
+        # Layout parameters
+        content_left = Inches(1.0)
+        content_width = Inches(11.0)
+        current_y = Inches(1.0)
+        line_height = Inches(0.6)
+        gap_between = Inches(0.3)
+        
+        # 1. Date textbox (independent)
+        date_str = datetime.now().strftime("%Y年%m月%d日")
+        date_shape = slide.shapes.add_textbox(
+            content_left,
+            current_y,
+            content_width,
+            line_height,
+        )
+        date_tf = date_shape.text_frame
+        date_tf.clear()
+        date_tf.word_wrap = True
+        date_tf.margin_left = Inches(0.1)
+        date_tf.margin_right = Inches(0.1)
+        date_tf.margin_top = Inches(0.05)
+        date_tf.margin_bottom = Inches(0.05)
+        p = date_tf.paragraphs[0]
+        run = p.add_run()
+        run.text = f"日期: {date_str}"
+        run.font.size = Pt(24)
+        if self.options.content_font_name:
+            run.font.name = self.options.content_font_name
+        
+        current_y += line_height + gap_between
+        
+        # 2. Groups textbox (with adaptive columns and font size)
+        group_items = []
+        if group_counts:
+            for group_name, count in sorted(group_counts.items()):
+                group_items.append(f"{group_name}: {count} 张")
+        
+        num_groups = len(group_items)
+        groups_height = Inches(4.0)  # Available height for groups
+        
+        # Determine optimal layout: 1 column -> 2 columns -> 3 columns -> shrink font
+        font_size = 24
+        num_columns = 1
+        
+        # Try 1 column first
+        estimated_height_1col = line_height * num_groups
+        if estimated_height_1col <= groups_height:
+            num_columns = 1
+        else:
+            # Try 2 columns
+            items_per_col_2 = (num_groups + 1) // 2
+            estimated_height_2col = line_height * items_per_col_2
+            if estimated_height_2col <= groups_height:
+                num_columns = 2
+            else:
+                # Try 3 columns
+                items_per_col_3 = (num_groups + 2) // 3
+                estimated_height_3col = line_height * items_per_col_3
+                if estimated_height_3col <= groups_height:
+                    num_columns = 3
+                else:
+                    # Need to shrink font
+                    num_columns = 3
+                    # Calculate required font size
+                    items_per_col = items_per_col_3
+                    required_height = groups_height
+                    font_size = int(24 * (required_height / estimated_height_3col))
+                    font_size = max(12, min(24, font_size))  # Clamp between 12 and 24
+        
+        # Calculate column layout
+        gap = Inches(0.2)
+        column_width = (content_width - gap * (num_columns - 1)) / num_columns
+        items_per_column = (num_groups + num_columns - 1) // num_columns
+        
+        # Create groups textbox
+        groups_shape = slide.shapes.add_textbox(
+            content_left,
+            current_y,
+            content_width,
+            groups_height,
+        )
+        groups_tf = groups_shape.text_frame
+        groups_tf.clear()
+        groups_tf.word_wrap = False
+        groups_tf.margin_left = Inches(0.1)
+        groups_tf.margin_right = Inches(0.1)
+        groups_tf.margin_top = Inches(0.1)
+        groups_tf.margin_bottom = Inches(0.1)
+        
+        # Build text with column layout
+        # Each group should be on its own line, distributed across columns
+        if num_columns == 1:
+            # Single column: one item per line
+            all_text = "\n".join(group_items)
+        else:
+            # Multiple columns: distribute items across columns
+            lines = []
+            for row in range(items_per_column):
+                row_items = []
+                for col in range(num_columns):
+                    idx = col * items_per_column + row
+                    if idx < num_groups:
+                        row_items.append(group_items[idx])
+                    else:
+                        row_items.append("")
+                # Join with tab for column alignment
+                line = "\t".join(row_items)
+                # Remove trailing tabs
+                line = line.rstrip("\t")
+                if line:
+                    lines.append(line)
+            all_text = "\n".join(lines)
+        
+        # Set up tab stops for columns
+        p = groups_tf.paragraphs[0]
+        p.clear()
+        try:
+            p.tab_stops.clear_all()
+            for col in range(num_columns):
+                tab_pos = content_left + col * (column_width + gap)
+                p.tab_stops.add_tab_stop(tab_pos)
+        except Exception:
+            pass
+        
+        # Add text with calculated font size
+        text_lines = all_text.split("\n")
+        for i, line in enumerate(text_lines):
+            if i > 0:
+                p = groups_tf.add_paragraph()
+                try:
+                    for col in range(num_columns):
+                        tab_pos = content_left + col * (column_width + gap)
+                        p.tab_stops.add_tab_stop(tab_pos)
+                except Exception:
+                    pass
+            run = p.add_run()
+            run.text = line
+            run.font.size = Pt(font_size)
+            if self.options.content_font_name:
+                run.font.name = self.options.content_font_name
+        
+        # Enable auto-fit as fallback
+        try:
+            if hasattr(groups_tf, 'auto_size'):
+                from pptx.enum.text import MSO_AUTO_SIZE
+                groups_tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        except Exception:
+            pass
+        
+        current_y += groups_height + gap_between
+        
+        # 3. Total textbox (independent)
+        total_shape = slide.shapes.add_textbox(
+            content_left,
+            current_y,
+            content_width,
+            line_height,
+        )
+        total_tf = total_shape.text_frame
+        total_tf.clear()
+        total_tf.word_wrap = True
+        total_tf.margin_left = Inches(0.1)
+        total_tf.margin_right = Inches(0.1)
+        total_tf.margin_top = Inches(0.05)
+        total_tf.margin_bottom = Inches(0.05)
+        p = total_tf.paragraphs[0]
+        run = p.add_run()
+        run.text = f"总计: {total_images} 张"
+        run.font.size = Pt(24)
+        run.font.bold = True
+        if self.options.content_font_name:
+            run.font.name = self.options.content_font_name
+
     def generate_from_slides(self, slides: List[Dict[str, object]], output_path: Path) -> Path:
         prs = Presentation()
         prs.slide_width = Inches(self.options.slide_width_in)
         prs.slide_height = Inches(self.options.slide_height_in)
+        
+        # Create cover page with group statistics
+        self._create_cover_page(prs, slides)
+        
         for slide_spec in slides:
             title_text = str(slide_spec.get("title") or "")
             image_paths = [str(p) for p in (slide_spec.get("images") or [])]  # type: ignore[index]
             layout_kind = str(slide_spec.get("layout") or "")
-            # Prefer 'Title Only' layout so there's no body box
-            layout_idx = self._find_title_only_layout(prs)
+            
+            # Use blank layout to avoid placeholder default font sizes
+            layout_idx = self._find_blank_layout(prs)
             slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
-            # Ensure only title placeholder remains
-            self._remove_non_title_placeholders(slide)
-            title_shape = slide.shapes.title
-            # If no title placeholder exists, create a textbox as title
-            if title_shape is None:
-                title_shape = slide.shapes.add_textbox(
-                    Inches(self.options.title_left_in),
-                    Inches(self.options.title_top_in),
-                    Inches(self.options.title_width_in),
-                    Inches(self.options.title_height_in),
-                )
+            
+            # Remove all placeholders (including "click to add title" and "click to add subtitle")
+            self._remove_all_placeholders(slide)
+            
+            # Create title as textbox (not placeholder) to avoid default font size
+            # Title position: top-left corner (left=0, top=0)
+            title_shape = slide.shapes.add_textbox(
+                Inches(0),
+                Inches(0),
+                Inches(self.options.title_width_in),
+                Inches(self.options.title_height_in),
+            )
             # Set title text and styling
+            title_shape.text_frame.clear()
+            p = title_shape.text_frame.paragraphs[0]
+            p.clear()
+            run = p.add_run()
+            run.text = title_text
+            # Title font size: half of configured size
+            run.font.size = Pt(self.options.title_font_size / 2.0)
+            if self.options.title_font_name:
+                run.font.name = self.options.title_font_name
+            # Left align title
             try:
-                title_shape.text_frame.clear()
-                p = title_shape.text_frame.paragraphs[0]
-                run = p.add_run()
-                run.text = title_text
-                run.font.size = Pt(self.options.title_font_size)
-                if self.options.title_font_name:
-                    run.font.name = self.options.title_font_name
-                # Left align title
-                try:
-                    if PP_ALIGN:
-                        p.alignment = PP_ALIGN.LEFT
-                except Exception:
-                    pass
-                # Apply geometry (in case placeholder path was used)
-                title_shape.left = Inches(self.options.title_left_in)
-                title_shape.top = Inches(self.options.title_top_in)
-                title_shape.width = Inches(self.options.title_width_in)
-                title_shape.height = Inches(self.options.title_height_in)
+                if PP_ALIGN:
+                    p.alignment = PP_ALIGN.LEFT
             except Exception:
                 pass
-            images = [{"path": p, "name": Path(p).name, "width": None, "height": None} for p in image_paths]
+            
+            # Load image dimensions
+            images = []
+            for p in image_paths:
+                img_path = Path(p)
+                width = None
+                height = None
+                try:
+                    with Image.open(str(img_path)) as im:
+                        width, height = im.size
+                except Exception:
+                    pass
+                images.append({
+                    "path": str(img_path),
+                    "name": img_path.name,
+                    "width": width,
+                    "height": height
+                })
             self._place_images_by_layout(slide, images, layout_kind)
         output_path = Path(output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -473,7 +739,8 @@ class PPTGenerator:
             name = str(img.get("name") or "")
             w = img.get("width")
             h = img.get("height")
-            caption = f"{name}  {w}×{h}" if (w and h) else name
+            # Format: "图片名 - (wxh)"
+            caption = f"{name} - ({w}x{h})" if (w and h) else name
             tb = slide.shapes.add_textbox(x, y + cell_size - Inches(0.3), width=cell_size, height=Inches(0.3))
             tf = tb.text_frame
             tf.clear()
@@ -491,17 +758,24 @@ class PPTGenerator:
 
     def _place_images_by_layout(self, slide, images: List[Dict], layout_kind: str) -> None:
         lk = layout_kind.lower()
+        # Use configured slide width for centering
+        slide_width = Inches(self.options.slide_width_in)
         if lk == "landscape":
-            self._place_landscape_vertical(slide, images, per_page=self.options.max_images_per_slide or 3)
+            self._place_landscape_vertical(slide, images, per_page=self.options.max_images_per_slide or 3, slide_width=slide_width)
         elif lk == "portrait":
-            self._place_portrait_horizontal(slide, images, per_page=self.options.max_images_per_slide or 4)
+            self._place_portrait_horizontal(slide, images, per_page=self.options.max_images_per_slide or 4, slide_width=slide_width)
         else:
-            self._place_square_grid(slide, images, per_page=self.options.max_images_per_slide or 4)
+            self._place_square_grid(slide, images, per_page=self.options.max_images_per_slide or 4, slide_width=slide_width)
 
-    def _place_square_grid(self, slide, images: List[Dict], per_page: int = 4) -> None:
-        left = Inches(self.options.content_left_in)
+    def _place_square_grid(self, slide, images: List[Dict], per_page: int = 4, slide_width=None) -> None:
+        # Center content area horizontally on slide
+        if slide_width is None:
+            slide_width = Inches(self.options.slide_width_in)
+        content_width = Inches(self.options.content_width_in)
+        centered_left = (slide_width - content_width) / 2.0
+        left = centered_left
         top = Inches(self.options.content_top_in)
-        width = Inches(self.options.content_width_in)
+        width = content_width
         height = Inches(self.options.content_height_in)
         cols = 2
         rows = 2
@@ -549,7 +823,8 @@ class PPTGenerator:
             name = str(img.get("name") or "")
             w = img.get("width")
             h = img.get("height")
-            caption = f"{name}  {w}×{h}" if (w and h) else name
+            # Format: "图片名 - (wxh)"
+            caption = f"{name} - ({w}x{h})" if (w and h) else name
             tb = slide.shapes.add_textbox(x, y + max_h, width=cell_w, height=Inches(0.3))
             tf = tb.text_frame
             tf.clear()
@@ -565,10 +840,15 @@ class PPTGenerator:
             if self.options.content_font_name:
                 run.font.name = self.options.content_font_name
 
-    def _place_landscape_vertical(self, slide, images: List[Dict], per_page: int = 3) -> None:
-        left = Inches(self.options.content_left_in)
+    def _place_landscape_vertical(self, slide, images: List[Dict], per_page: int = 3, slide_width=None) -> None:
+        # Center content area horizontally on slide
+        if slide_width is None:
+            slide_width = Inches(self.options.slide_width_in)
+        content_width = Inches(self.options.content_width_in)
+        centered_left = (slide_width - content_width) / 2.0
+        left = centered_left
         top = Inches(self.options.content_top_in)
-        width = Inches(self.options.content_width_in)
+        width = content_width
         height = Inches(self.options.content_height_in)
         cell_h = height / float(max(1, min(per_page, len(images))))
         cell_w = width
@@ -586,55 +866,58 @@ class PPTGenerator:
                     w_px, h_px = (1000, 600)
             w_px = float(w_px)
             h_px = float(h_px)
-            # fit to width primarily
+            # caption beneath: 1 line (name | w x h), reserve 0.3in
+            cap_h = Inches(0.3)
+            # fit to width primarily, accounting for caption space
             disp_w = cell_w
             disp_h = disp_w * (h_px / w_px)
+            # Adjust image height if overlapping with caption
+            if disp_h > cell_h - cap_h:
+                disp_h = max(Inches(0.5), cell_h - cap_h)
+                disp_w = disp_h * (w_px / h_px)
+            # Also check against gap
             if disp_h > cell_h - gap:
                 disp_h = cell_h - gap
                 disp_w = disp_h * (w_px / h_px)
             x = left + (cell_w - disp_w) / 2.0
+            # Add picture only once with final dimensions
             slide.shapes.add_picture(img["path"], x, y, width=disp_w, height=disp_h)
-            # caption beneath: 3 lines (name, WxH, blank), reserve 0.6in
             name = str(img.get("name") or "")
             w = img.get("width")
             h = img.get("height")
-            # Adjust image height if overlapping with caption
-            cap_h = Inches(0.6)
-            if disp_h > cell_h - cap_h:
-                disp_h = max(Inches(0.5), cell_h - cap_h)
-            slide.shapes.add_picture(img["path"], x, y, width=disp_w, height=disp_h)
+            # Format: "图片名 - (wxh)"
+            caption = f"{name} - ({w}x{h})" if (w and h) else name
             tb = slide.shapes.add_textbox(left, y + disp_h, width=cell_w, height=cap_h)
             tf = tb.text_frame
             tf.clear()
-            p1 = tf.paragraphs[0]
+            p = tf.paragraphs[0]
             if PP_ALIGN:
-                p1.alignment = PP_ALIGN.CENTER
-            r1 = p1.add_run()
-            r1.text = name
-            r1.font.size = Pt(self.options.content_font_size)
+                p.alignment = PP_ALIGN.CENTER
+            r = p.add_run()
+            r.text = caption
+            r.font.size = Pt(self.options.content_font_size)
             if self.options.content_font_name:
-                r1.font.name = self.options.content_font_name
-            p2 = tf.add_paragraph()
-            if PP_ALIGN:
-                p2.alignment = PP_ALIGN.CENTER
-            r2 = p2.add_run()
-            r2.text = f"{w} × {h}" if (w and h) else ""
-            r2.font.size = Pt(self.options.content_font_size)
-            if self.options.content_font_name:
-                r2.font.name = self.options.content_font_name
-            p3 = tf.add_paragraph()
-            if PP_ALIGN:
-                p3.alignment = PP_ALIGN.CENTER
+                r.font.name = self.options.content_font_name
             y += cell_h
 
-    def _place_portrait_horizontal(self, slide, images: List[Dict], per_page: int = 4) -> None:
-        left = Inches(self.options.content_left_in)
+    def _place_portrait_horizontal(self, slide, images: List[Dict], per_page: int = 4, slide_width=None) -> None:
+        # Center content area horizontally on slide
+        if slide_width is None:
+            slide_width = Inches(self.options.slide_width_in)
+        content_width = Inches(self.options.content_width_in)
+        centered_left = (slide_width - content_width) / 2.0
+        left = centered_left
         top = Inches(self.options.content_top_in)
-        width = Inches(self.options.content_width_in)
+        width = content_width
         height = Inches(self.options.content_height_in)
-        cell_w = width / float(max(1, min(per_page, len(images))))
+        gap = Inches(0.3)  # Gap between cells
+        cap_h = Inches(0.3)  # caption height
+        # Calculate cell width with gaps between cells
+        num_cells = max(1, min(per_page, len(images)))
+        total_gaps = gap * (num_cells - 1) if num_cells > 1 else Inches(0)
+        available_width = width - total_gaps
+        cell_w = available_width / float(num_cells)
         cell_h = height
-        gap = Inches(0.2)
         x = left
         for idx, img in enumerate(images[:per_page]):
             w_px = img.get("width")
@@ -647,41 +930,57 @@ class PPTGenerator:
                     w_px, h_px = (800, 1200)
             w_px = float(w_px)
             h_px = float(h_px)
-            # fit to height primarily
-            disp_h = cell_h
+            # fit to height primarily (excluding caption area)
+            caption_height = Inches(0.4)  # Match caption height used below
+            img_area_h = cell_h - caption_height
+            disp_h = img_area_h
             disp_w = disp_h * (w_px / h_px)
-            if disp_w > cell_w - gap:
-                disp_w = cell_w - gap
+            # Leave some margin in cell for image
+            img_gap = Inches(0.1)
+            if disp_w > cell_w - img_gap:
+                disp_w = cell_w - img_gap
                 disp_h = disp_w * (h_px / w_px)
-            y = top + (cell_h - disp_h) / 2.0
-            slide.shapes.add_picture(img["path"], x, y, width=disp_w, height=disp_h)
-            # caption below image area: 3 lines (name, WxH, blank)
+            # Center image horizontally in its cell
+            img_x = x + (cell_w - disp_w) / 2.0
+            # Center image vertically in image area (above caption)
+            img_y = top + (img_area_h - disp_h) / 2.0
+            slide.shapes.add_picture(img["path"], img_x, img_y, width=disp_w, height=disp_h)
+            # caption at bottom of cell: 1 line (name - wxh)
             name = str(img.get("name") or "")
             w = img.get("width")
             h = img.get("height")
-            tb = slide.shapes.add_textbox(x, top + cell_h - Inches(0.6), width=cell_w, height=Inches(0.6))
+            # Format: "图片名 - (wxh)"
+            caption = f"{name} - ({w}x{h})" if (w and h) else name
+            # Textbox at bottom of cell, fixed width with word wrap
+            # Increase height slightly to accommodate potential wrapping
+            caption_height = Inches(0.4)  # Slightly taller to allow wrapping
+            tb = slide.shapes.add_textbox(x, top + cell_h - caption_height, width=cell_w, height=caption_height)
             tf = tb.text_frame
             tf.clear()
-            p1 = tf.paragraphs[0]
+            # Enable word wrap for long text
+            tf.word_wrap = True
+            # Set fixed margins to ensure text doesn't touch edges
+            tf.margin_left = Inches(0.05)
+            tf.margin_right = Inches(0.05)
+            tf.margin_top = Inches(0.02)
+            tf.margin_bottom = Inches(0.02)
+            p = tf.paragraphs[0]
+            # Center text horizontally
             if PP_ALIGN:
-                p1.alignment = PP_ALIGN.CENTER
-            r1 = p1.add_run()
-            r1.text = name
-            r1.font.size = Pt(self.options.content_font_size)
+                p.alignment = PP_ALIGN.CENTER
+            # Align text to top of textbox (vertical alignment)
+            try:
+                from pptx.enum.text import MSO_ANCHOR
+                tf.vertical_anchor = MSO_ANCHOR.TOP
+            except Exception:
+                pass
+            r = p.add_run()
+            r.text = caption
+            r.font.size = Pt(self.options.content_font_size)
             if self.options.content_font_name:
-                r1.font.name = self.options.content_font_name
-            p2 = tf.add_paragraph()
-            if PP_ALIGN:
-                p2.alignment = PP_ALIGN.CENTER
-            r2 = p2.add_run()
-            r2.text = f"{w} × {h}" if (w and h) else ""
-            r2.font.size = Pt(self.options.content_font_size)
-            if self.options.content_font_name:
-                r2.font.name = self.options.content_font_name
-            p3 = tf.add_paragraph()
-            if PP_ALIGN:
-                p3.alignment = PP_ALIGN.CENTER
-            x += cell_w
+                r.font.name = self.options.content_font_name
+            # Move to next cell position (with gap)
+            x += cell_w + gap
 
     def generate(self, groups: List[Dict], output_path: Path) -> Path:
         prs = Presentation()
@@ -698,7 +997,56 @@ class PPTGenerator:
                 layout_idx = self._slide_layout_for(prs)
                 slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
                 title = self._title_for_batch(group_name, idx, len(batches))
-                slide.shapes.title.text = title
+                # Set title with proper font size
+                try:
+                    title_shape = slide.shapes.title
+                    if title_shape is None:
+                        title_shape = slide.shapes.add_textbox(
+                            Inches(self.options.title_left_in),
+                            Inches(self.options.title_top_in),
+                            Inches(self.options.title_width_in),
+                            Inches(self.options.title_height_in),
+                        )
+                    # If using placeholder, we need to clear it properly
+                    if hasattr(title_shape, 'placeholder') and title_shape.placeholder:
+                        title_shape.text_frame.clear()
+                    else:
+                        title_shape.text_frame.clear()
+                    
+                    p = title_shape.text_frame.paragraphs[0]
+                    # Clear all runs first
+                    p.clear()
+                    run = p.add_run()
+                    run.text = title
+                    # Set font size
+                    run.font.size = Pt(self.options.title_font_size)
+                    # Force set font size via XML to ensure it's applied
+                    try:
+                        from pptx.oxml.ns import qn
+                        rPr = run._r.get_or_add_rPr()
+                        sz = rPr.find(qn('w:sz'))
+                        if sz is None:
+                            from pptx.oxml import parse_xml
+                            sz = parse_xml(f'<w:sz xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="{int(self.options.title_font_size * 2)}"/>')
+                            rPr.append(sz)
+                        else:
+                            sz.set(qn('w:val'), str(int(self.options.title_font_size * 2)))
+                    except Exception:
+                        pass
+                    if self.options.title_font_name:
+                        run.font.name = self.options.title_font_name
+                    
+                    try:
+                        if PP_ALIGN:
+                            p.alignment = PP_ALIGN.LEFT
+                    except Exception:
+                        pass
+                except Exception:
+                    # Fallback to simple text assignment
+                    try:
+                        slide.shapes.title.text = title
+                    except Exception:
+                        pass
                 self._place_images(slide, batch)
         output_path = Path(output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1075,10 +1423,24 @@ def merge(directory: str, filename: str, config_path: Optional[str]) -> None:
             for idx, batch in enumerate(batches, start=1):
                 slides.append({
                     "title": f"{breadcrumb} ({idx}/{len(batches)})",
+                    "breadcrumb": breadcrumb,  # Preserve breadcrumb for cover page statistics
                     "images": batch,
                     "layout": kind,
                 })
 
+    # Resolve template path relative to config file if needed
+    template_path = cfg.template_path
+    if template_path:
+        template_path_obj = Path(template_path).expanduser()
+        if not template_path_obj.is_absolute():
+            # If relative, try relative to config file location
+            if config_path:
+                config_dir = Path(config_path).parent
+                template_path_obj = (config_dir / template_path).resolve()
+            else:
+                template_path_obj = Path(template_path).resolve()
+        template_path = str(template_path_obj) if template_path_obj.exists() else ""
+    
     generator = PPTGenerator(PPTOptions(
         max_images_per_slide=cfg.max_images_per_slide,
         layout_strategy=cfg.layout_strategy,
@@ -1097,6 +1459,7 @@ def merge(directory: str, filename: str, config_path: Optional[str]) -> None:
         content_height_in=cfg.content_height_in,
         title_font_name=cfg.title_font_name,
         content_font_name=cfg.content_font_name,
+        template_path=template_path,
     ))
     # Rotate existing PPTX if present before writing
     _rotate_if_exists(out_ppt)

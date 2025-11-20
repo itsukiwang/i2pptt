@@ -11,8 +11,9 @@ server {
     }
 
     # Frontend (Vite dev server or static files)
-    location /i2pptt {
-        proxy_pass http://127.0.0.1:5174;
+    # Important: proxy_pass must include the base path to match Vite's base configuration
+    location /i2pptt/ {
+        proxy_pass http://127.0.0.1:5174/i2pptt/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

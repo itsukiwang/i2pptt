@@ -29,7 +29,9 @@ export default defineConfig({
       '.vmlchina.com', // 允许所有 vmlchina.com 的子域名
     ],
     proxy: {
-      '/api': {
+      // Proxy API requests - match the base path
+      // When basePath is '/i2pptt/', proxy '/i2pptt/api' to backend
+      [basePath === '/' ? '/api' : `${basePath.replace(/\/$/, '')}/api`]: {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },

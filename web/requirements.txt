@@ -1,0 +1,18 @@
+# Web backend dependencies for i2pptt
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# TOML parsing (tomllib is built-in for Python 3.11+, but we need tomli for older versions)
+tomli>=2.0.0; python_version < "3.11"
+
+# Optional archive support (for upload)
+rarfile>=4.0
+py7zr>=0.21.0
+
+# CLI dependencies (also needed for backend to run CLI commands)
+click>=8.1.7
+Pillow>=10.4.0
+python-pptx>=0.6.23
+

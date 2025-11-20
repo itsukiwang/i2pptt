@@ -77,7 +77,7 @@ fi
 
 if [[ ! -f "$VENV_ACTIVATE" ]]; then
   echo "[ERROR] venv not found at $VENV_ACTIVATE" >&2
-  echo "Create: python3 -m venv venv && source venv/bin/activate && pip install -r cli/requirements.txt" >&2
+  echo "Create: python3 -m venv venv && source venv/bin/activate && pip install -r web/requirements.txt" >&2
   exit 1
 fi
 

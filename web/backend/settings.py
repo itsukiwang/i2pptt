@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tomllib
 import os
 from typing import Any, Dict
+
+# TOML parsing: use tomllib (Python 3.11+) or tomli (fallback)
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore
+    except ImportError:
+        tomllib = None  # type: ignore
 
 WEB_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = WEB_ROOT / "settings.toml"
@@ -11,6 +19,8 @@ SETTINGS_PATH = WEB_ROOT / "settings.toml"
 
 def _load_settings() -> Dict[str, Any]:
     if not SETTINGS_PATH.exists():
+        return {}
+    if tomllib is None:
         return {}
     try:
         with SETTINGS_PATH.open("rb") as fh:

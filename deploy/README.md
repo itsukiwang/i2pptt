@@ -17,7 +17,12 @@
 # 创建 Python 虚拟环境
 python3 -m venv venv
 source venv/bin/activate
-pip install -r cli/requirements.txt
+
+# 安装后端依赖（包含 CLI 和 Web 后端所需的所有包）
+pip install -r web/requirements.txt
+
+# 如果只需要 CLI 工具，可以使用：
+# pip install -r cli/requirements.txt
 
 # 安装前端依赖
 cd web/frontend

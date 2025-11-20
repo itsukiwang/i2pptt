@@ -14,6 +14,11 @@ export default defineConfig({
     port: 5174,
     strictPort: true, // 如果端口被占用，报错而不是使用其他端口
     host: '0.0.0.0', // 允许外部访问
+    allowedHosts: [
+      'toolkit.vmlchina.com',
+      'localhost',
+      '.vmlchina.com', // 允许所有 vmlchina.com 的子域名
+    ],
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8001',

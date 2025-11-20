@@ -5,10 +5,18 @@
 #   ./i2pptt_service.sh stop {backend|frontend|all}
 #   ./i2pptt_service.sh restart {backend|frontend|all}
 #   ./i2pptt_service.sh status
-# Environment:
-#   I2PPTT_ROOT_PATH, ROOT_PATH (fallback)
-#   I2PPTT_WORKERS
-#   I2PPTT_VITE_BASE_PATH, VITE_BASE_PATH (fallback)
+# Environment Variables (参考 ppttt 模式，优先级从高到低):
+#   I2PPTT_ROOT_PATH, ROOT_PATH (fallback) - 后端根路径
+#   I2PPTT_WORKERS - 后端工作进程数
+#   I2PPTT_VITE_BASE_PATH, VITE_BASE_PATH (fallback) - 前端 base 路径
+# 
+# 配置优先级：环境变量 > 配置文件 (web/settings.toml)
+# 
+# 本地开发示例:
+#   I2PPTT_ROOT_PATH="" I2PPTT_VITE_BASE_PATH="/" ./i2pptt_service.sh start all
+# 
+# 生产环境示例:
+#   使用配置文件 web/settings.toml 中的设置，或通过环境变量覆盖
 
 set -euo pipefail
 
@@ -19,6 +27,7 @@ FRONTEND_PORT=5174
 LOG_DIR="$ROOT_DIR/logs"
 mkdir -p "$LOG_DIR"
 SETTINGS_FILE="$ROOT_DIR/web/settings.toml"
+
 
 _load_config_from_file() {
   local config_file="$1"; local key="$2"
@@ -52,11 +61,13 @@ PY
   return 1
 }
 
-# root_path
-if [[ -z "${I2PPTT_ROOT_PATH:-}" && -z "${ROOT_PATH:-}" ]]; then
-  ROOT_PATH="$(_load_config_from_file "$SETTINGS_FILE" "root_path" 2>/dev/null || echo "")"
+# root_path (参考 ppttt 模式：环境变量优先，然后配置文件)
+if [[ -n "${I2PPTT_ROOT_PATH:-}" ]]; then
+  ROOT_PATH="$I2PPTT_ROOT_PATH"
+elif [[ -n "${ROOT_PATH:-}" ]]; then
+  ROOT_PATH="$ROOT_PATH"
 else
-  ROOT_PATH="${I2PPTT_ROOT_PATH:-${ROOT_PATH:-}}"
+  ROOT_PATH="$(_load_config_from_file "$SETTINGS_FILE" "root_path" 2>/dev/null || echo "")"
 fi
 
 # workers
@@ -66,14 +77,25 @@ else
   BACKEND_WORKERS="${I2PPTT_WORKERS}"
 fi
 
-# vite base
-if [[ -z "${I2PPTT_VITE_BASE_PATH:-}" && -z "${VITE_BASE_PATH:-}" ]]; then
-  CONFIG_VITE_BASE="$(_load_config_from_file "$SETTINGS_FILE" "vite_base_path" 2>/dev/null || echo "")"
-  if [[ -n "$CONFIG_VITE_BASE" ]]; then
-    export I2PPTT_VITE_BASE_PATH="$CONFIG_VITE_BASE"
-    export VITE_BASE_PATH="$CONFIG_VITE_BASE"
+# vite base (参考 ppttt 模式：环境变量优先，然后配置文件)
+if [[ -n "${I2PPTT_VITE_BASE_PATH:-}" ]]; then
+  VITE_BASE="$I2PPTT_VITE_BASE_PATH"
+elif [[ -n "${VITE_BASE_PATH:-}" ]]; then
+  VITE_BASE="$VITE_BASE_PATH"
+else
+  VITE_BASE="$(_load_config_from_file "$SETTINGS_FILE" "vite_base_path" 2>/dev/null || echo "/")"
+fi
+# 规范化 vite base 路径
+if [[ "$VITE_BASE" != "/" ]]; then
+  if [[ ! "$VITE_BASE" =~ ^/ ]]; then
+    VITE_BASE="/$VITE_BASE"
+  fi
+  if [[ ! "$VITE_BASE" =~ /$ ]]; then
+    VITE_BASE="$VITE_BASE/"
   fi
 fi
+export I2PPTT_VITE_BASE_PATH="$VITE_BASE"
+export VITE_BASE_PATH="$VITE_BASE"
 
 if [[ ! -f "$VENV_ACTIVATE" ]]; then
   echo "[ERROR] venv not found at $VENV_ACTIVATE" >&2
@@ -118,7 +140,7 @@ show_status() {
 start_backend() {
   if ! check_port "$BACKEND_PORT"; then
     echo "[ERROR] Backend port $BACKEND_PORT in use" >&2; exit 1; fi
-  echo "[INFO] Starting backend (uvicorn) on $BACKEND_PORT"
+  echo "[INFO] Starting backend (uvicorn) on $BACKEND_PORT (root_path: ${ROOT_PATH:-/})"
   local args="--host 0.0.0.0 --port $BACKEND_PORT"
   # Note: uvicorn doesn't have direct body size limit option
   # File size limits are handled by FastAPI/Starlette middleware
@@ -214,8 +236,7 @@ start_backend() {
 start_frontend() {
   if ! check_port "$FRONTEND_PORT"; then
     echo "[WARN] Frontend port $FRONTEND_PORT in use, attempting cleanup..."; stop_port "$FRONTEND_PORT" "Frontend" || true; fi
-  local vite_base="${I2PPTT_VITE_BASE_PATH:-${VITE_BASE_PATH:-${ROOT_PATH:-/}}}"
-  echo "[INFO] Starting frontend on $FRONTEND_PORT (base $vite_base)"
+  echo "[INFO] Starting frontend on $FRONTEND_PORT (base: $VITE_BASE)"
   
   # Check if node_modules exists, if not, install dependencies
   if [[ ! -d "$ROOT_DIR/web/frontend/node_modules" ]]; then
@@ -227,8 +248,8 @@ start_frontend() {
   # Start frontend in background
   ( 
     cd "$ROOT_DIR/web/frontend"
-    export I2PPTT_VITE_BASE_PATH="$vite_base"
-    export VITE_BASE_PATH="$vite_base"
+    export I2PPTT_VITE_BASE_PATH="$VITE_BASE"
+    export VITE_BASE_PATH="$VITE_BASE"
     nohup npm run dev -- --host --port "$FRONTEND_PORT" >> "$LOG_DIR/frontend.log" 2>&1
   ) &
   

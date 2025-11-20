@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, HTTPException
 import subprocess
 import os
 import shutil
+import sys
 from ..settings import get_cli_path, get_default_ppt_filename, get_default_md_filename
 
 router = APIRouter(prefix="/generate", tags=["generate"])
@@ -72,7 +73,9 @@ def generate(
     
     # Use the image directory for -d, and run from md_dir so CLI can find the MD file
     # The CLI will look for {ppt_filename}_structure.md in the current working directory (md_dir)
-    cmd = ["python3", str(cli_script), "merge", "-d", str(directory), "-f", ppt_filename]
+    # Use current Python interpreter (from venv) instead of system python3
+    python_exe = sys.executable
+    cmd = [python_exe, str(cli_script), "merge", "-d", str(directory), "-f", ppt_filename]
     # Prepare log file path
     log_path = job_dir / "generate.log"
     

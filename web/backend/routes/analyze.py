@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, HTTPException
 import subprocess
 import shutil
 import os
+import sys
 
 from ..settings import get_cli_path, get_default_md_filename
 from ..models.job import JobStore, JobStatus
@@ -47,8 +48,10 @@ def analyze(
     project_root = cli_root.parent.resolve()
     # Run the CLI script directly instead of using -m mode
     cli_script = cli_root / "i2pptt.py"
+    # Use current Python interpreter (from venv) instead of system python3
+    python_exe = sys.executable
     # Use default MD filename for scan
-    cmd = ["python3", str(cli_script), "scan", "-d", directory, "-f", scan_filename]
+    cmd = [python_exe, str(cli_script), "scan", "-d", directory, "-f", scan_filename]
     
     # Prepare log file path
     job_dir = JobStore.job_dir(job_id)

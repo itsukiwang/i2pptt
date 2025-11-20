@@ -29,14 +29,24 @@ export default defineConfig({
       '.vmlchina.com', // 允许所有 vmlchina.com 的子域名
     ],
     proxy: {
-      // Proxy API requests - match the base path
-      // When basePath is '/i2pptt/', proxy '/i2pptt/api' to backend
-      [basePath === '/' ? '/api' : `${basePath.replace(/\/$/, '')}/api`]: {
+      // Proxy API requests - always match /api
+      // If base path is not root, rewrite to include root_path for backend
+      '/api': {
         target: 'http://127.0.0.1:8001',
         changeOrigin: true,
+        rewrite: (path) => {
+          // If base path is not root, add it to the path for backend
+          // Backend expects /i2pptt/api/... when root_path is /i2pptt
+          if (basePath !== '/') {
+            const baseWithoutSlash = basePath.replace(/\/$/, '');
+            return baseWithoutSlash + path;
+          }
+          return path;
+        },
       },
     },
   },
 });
+
 
 

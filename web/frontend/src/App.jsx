@@ -12,13 +12,16 @@ const getApiBaseURL = () => {
   const isDev = import.meta.env.DEV;
   const { hostname, pathname: currentPath, port } = window.location;
   
-  // Local development: always use empty string for Vite proxy
+  // Local development: use empty string, let Vite proxy handle base path
   const isLocalDev = (isDev && ['localhost', '127.0.0.1'].includes(hostname)) ||
                      ['localhost', '127.0.0.1'].includes(hostname) ||
                      port === '5174' ||
                      port === '5173';
   
-  if (isLocalDev) return '';
+  if (isLocalDev) {
+    // In local dev, Vite proxy will rewrite /api to /i2pptt/api if base path is set
+    return '';
+  }
   
   // Production: use configured base path or infer from current path
   if (viteBaseURL !== '/') {

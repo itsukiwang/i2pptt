@@ -5,7 +5,16 @@ import react from '@vitejs/plugin-react';
 // 优先使用项目特定的环境变量 I2PPTT_VITE_BASE_PATH，避免与其他 Vite 应用冲突
 // 如果未设置，则使用通用变量 VITE_BASE_PATH（向后兼容）
 // 默认使用根目录 '/'
-const basePath = process.env.I2PPTT_VITE_BASE_PATH || process.env.VITE_BASE_PATH || '/';
+let basePath = process.env.I2PPTT_VITE_BASE_PATH || process.env.VITE_BASE_PATH || '/';
+// 规范化 base 路径：确保以 / 开头，如果不是根路径则也以 / 结尾
+if (basePath !== '/') {
+  if (!basePath.startsWith('/')) {
+    basePath = '/' + basePath;
+  }
+  if (!basePath.endsWith('/')) {
+    basePath = basePath + '/';
+  }
+}
 
 export default defineConfig({
   base: basePath,

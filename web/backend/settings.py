@@ -82,6 +82,84 @@ def get_job_retention_hours() -> float:
         return 24.0
 
 
+def get_job_retention_by_status() -> dict[str, float]:
+    """Return job retention time in hours by job status.
+    
+    Returns a dict mapping job status to retention hours.
+    If a status is not configured, uses the default retention time.
+    
+    Default retention times (if cleanup section not configured):
+    - completed: 48.0 hours
+    - failed: 12.0 hours
+    - uploaded: 24.0 hours (uses default)
+    - generating: 24.0 hours (uses default)
+    """
+    settings = _load_settings()
+    server_section = settings.get("server", {})
+    if not isinstance(server_section, dict):
+        # Return empty dict - will use default retention for all
+        return {}
+    
+    cleanup_section = server_section.get("cleanup", {})
+    if not isinstance(cleanup_section, dict):
+        # Return empty dict - will use default retention for all
+        return {}
+    
+    retention_map = {}
+    default_retention = get_job_retention_hours()
+    
+    # Map status names to retention config keys
+    status_config_map = {
+        "completed": "retention_completed",
+        "failed": "retention_failed",
+        "uploaded": "retention_uploaded",
+        "generating": "retention_generating",
+    }
+    
+    # Only add entries for statuses that are explicitly configured
+    # If cleanup section exists but no status-specific config, return empty dict
+    # This allows using default retention for all statuses
+    for status, config_key in status_config_map.items():
+        retention = cleanup_section.get(config_key)
+        if retention is not None:
+            try:
+                retention = float(retention)
+                if retention >= 0:
+                    retention_map[status] = retention
+                # If negative, don't add to map (will use default)
+            except (ValueError, TypeError):
+                # Invalid value, don't add to map (will use default)
+                pass
+    
+    return retention_map
+
+
+def get_job_cleanup_interval() -> int:
+    """Return the job cleanup interval in seconds.
+    
+    Default: 3600 seconds (1 hour)
+    Minimum: 60 seconds (1 minute)
+    """
+    settings = _load_settings()
+    server_section = settings.get("server", {})
+    if not isinstance(server_section, dict):
+        return 3600
+    
+    cleanup_section = server_section.get("cleanup", {})
+    if not isinstance(cleanup_section, dict):
+        interval = server_section.get("job_cleanup_interval", 3600)
+    else:
+        interval = cleanup_section.get("interval", server_section.get("job_cleanup_interval", 3600))
+    
+    try:
+        interval = int(interval)
+        if interval < 60:  # Minimum 1 minute
+            return 3600
+        return interval
+    except (ValueError, TypeError):
+        return 3600
+
+
 def get_session_timeout_seconds() -> int:
     """Return the user session timeout in seconds.
     

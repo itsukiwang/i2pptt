@@ -179,23 +179,71 @@ class JobStore:
             shutil.rmtree(job_dir)
 
     @classmethod
-    def cleanup_expired_jobs(cls, retention_hours: float) -> int:
-        """Delete jobs older than retention_hours.
+    def cleanup_expired_jobs(
+        cls, 
+        retention_hours: Optional[float] = None,
+        retention_by_status: Optional[Dict[str, float]] = None
+    ) -> Dict[str, Any]:
+        """Delete jobs older than retention time.
         
         Args:
-            retention_hours: Jobs older than this will be deleted. If 0, no cleanup is performed.
+            retention_hours: Default retention time in hours. If None, uses default from settings.
+            retention_by_status: Dict mapping job status to retention hours. If None, uses default from settings.
         
         Returns:
-            Number of jobs deleted.
+            Dict with cleanup statistics:
+            - deleted_count: Number of jobs deleted
+            - deleted_by_status: Dict mapping status to count of deleted jobs
+            - total_size_bytes: Total size of deleted job directories in bytes
+            - errors: List of error messages
         """
-        if retention_hours <= 0:
-            return 0
-        
         from datetime import timedelta
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        # Use provided retention or get from settings
+        if retention_hours is None:
+            from ..settings import get_job_retention_hours
+            retention_hours = get_job_retention_hours()
+        
+        if retention_hours <= 0:
+            return {
+                "deleted_count": 0,
+                "deleted_by_status": {},
+                "total_size_bytes": 0,
+                "errors": []
+            }
+        
+        # Use provided retention_by_status or get from settings
+        if retention_by_status is None:
+            from ..settings import get_job_retention_by_status
+            retention_by_status = get_job_retention_by_status()
+        
+        # If no status-specific retention, use default for all
+        if not retention_by_status:
+            retention_by_status = {}
         
         deleted_count = 0
+        deleted_by_status: Dict[str, int] = {}
+        total_size_bytes = 0
+        errors: List[str] = []
         current_time = datetime.utcnow()
-        cutoff_time = current_time - timedelta(hours=retention_hours)
+        
+        def get_retention_for_status(status: str) -> float:
+            """Get retention time for a specific job status."""
+            return retention_by_status.get(status, retention_hours)
+        
+        def get_dir_size(path: Path) -> int:
+            """Calculate total size of directory in bytes."""
+            try:
+                total = 0
+                for item in path.rglob('*'):
+                    if item.is_file():
+                        total += item.stat().st_size
+                return total
+            except Exception:
+                return 0
         
         with cls._lock:
             for entry in cls.jobs_root().iterdir():
@@ -208,17 +256,42 @@ class JobStore:
                 
                 try:
                     job = cls.load(entry.name)
+                    status = job.status.value if hasattr(job.status, 'value') else str(job.status)
+                    
+                    # Get retention time for this job's status
+                    job_retention = get_retention_for_status(status)
+                    if job_retention <= 0:
+                        continue
+                    
+                    cutoff_time = current_time - timedelta(hours=job_retention)
+                    
                     # Check if job is older than retention time
                     if job.created_at < cutoff_time:
                         try:
+                            # Calculate directory size before deletion
+                            dir_size = get_dir_size(entry)
+                            
+                            # Delete the job
                             cls.delete(entry.name)
+                            
                             deleted_count += 1
-                        except Exception:
-                            # Log error but continue with other jobs
+                            deleted_by_status[status] = deleted_by_status.get(status, 0) + 1
+                            total_size_bytes += dir_size
+                        except Exception as exc:
+                            error_msg = f"Failed to delete job '{entry.name}': {exc}"
+                            errors.append(error_msg)
+                            logger.warning(error_msg, exc_info=True)
                             continue
-                except Exception:
-                    # Skip invalid job files
+                except Exception as exc:
+                    error_msg = f"Failed to load job '{entry.name}': {exc}"
+                    errors.append(error_msg)
+                    logger.debug(error_msg, exc_info=True)
                     continue
         
-        return deleted_count
+        return {
+            "deleted_count": deleted_count,
+            "deleted_by_status": deleted_by_status,
+            "total_size_bytes": total_size_bytes,
+            "errors": errors
+        }
 

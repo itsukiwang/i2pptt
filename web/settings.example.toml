@@ -1,8 +1,34 @@
 [server]
 root_path = "/i2pptt"
 workers = 4
+max_concurrent_users = 4
+session_timeout_seconds = 300
+# Job retention time in hours (default: 24.0)
+# Set to 0 to disable automatic cleanup
+job_retention_hours = 24.0
+
+# Job cleanup configuration
+[server.cleanup]
+# Cleanup interval in seconds (default: 3600, minimum: 60)
+interval = 3600
+
+# Retention time by job status (in hours)
+# If not specified, uses job_retention_hours as default
+retention_completed = 48.0   # Completed jobs: 48 hours
+retention_failed = 12.0       # Failed jobs: 12 hours
+retention_uploaded = 24.0     # Uploaded jobs: 24 hours
+retention_generating = 24.0   # Generating jobs: 24 hours
 
 [cli]
 root = "../cli"
+
+[files]
+# Default MD filename (without extension)
+default_md_filename = "images"
+# Default PPT filename template (without extension)
+# Use {date} placeholder for date, e.g., "images-{date}" -> "images-2024-11-17"
+default_ppt_filename = "images-{date}"
+# Date format for PPT filename (strftime format)
+date_format = "%Y-%m-%d"
 
 

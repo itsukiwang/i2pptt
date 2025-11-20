@@ -122,20 +122,93 @@ start_backend() {
   local args="--host 0.0.0.0 --port $BACKEND_PORT"
   # Note: uvicorn doesn't have direct body size limit option
   # File size limits are handled by FastAPI/Starlette middleware
-  # For large files, consider using nginx or reverse proxy with client_max_body_size
+  # For large files, consider using nginx as reverse proxy with client_max_body_size
   if [[ -n "${BACKEND_WORKERS:-}" && "$BACKEND_WORKERS" != "1" ]]; then
     args="$args --workers $BACKEND_WORKERS"
   else
     args="$args --reload"
   fi
   VENV_PY="$ROOT_DIR/venv/bin/python"
-  ( cd "$ROOT_DIR"; export ROOT_PATH; nohup "$VENV_PY" -m uvicorn web.backend.main:app $args > "$LOG_DIR/backend.log" 2>&1 & ) >/dev/null 2>&1 &
-  sleep 2
-  if lsof -Pi :"$BACKEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "[INFO] Backend started, logs: $LOG_DIR/backend.log"
-  else
-    echo "[ERROR] Backend failed, tail logs:" >&2; tail -20 "$LOG_DIR/backend.log" 2>/dev/null || true; exit 1
+  
+  # Calculate wait time based on worker count
+  # More workers need more time to start
+  local worker_count=1
+  if [[ -n "${BACKEND_WORKERS:-}" && "$BACKEND_WORKERS" != "1" ]]; then
+    worker_count="$BACKEND_WORKERS"
   fi
+  # Base wait: 5 seconds, plus 2 seconds per worker
+  local max_wait=$((5 + worker_count * 2))
+  # Cap at 30 seconds
+  if [[ $max_wait -gt 30 ]]; then
+    max_wait=30
+  fi
+  
+  # Don't clear log immediately - append to preserve history
+  # Start backend in background
+  ( cd "$ROOT_DIR"; export ROOT_PATH; nohup "$VENV_PY" -m uvicorn web.backend.main:app $args >> "$LOG_DIR/backend.log" 2>&1 & ) >/dev/null 2>&1 &
+  
+  # Wait and check multiple times
+  local waited=0
+  local port_listening=false
+  local startup_complete=false
+  
+  while [[ $waited -lt $max_wait ]]; do
+    sleep 1
+    waited=$((waited + 1))
+    
+    # Check if port is listening
+    if lsof -Pi :"$BACKEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+      port_listening=true
+    fi
+    
+    # Check if "Application startup complete" appears in logs
+    if [[ -f "$LOG_DIR/backend.log" ]]; then
+      # Count how many times "Application startup complete" appears
+      # Should match worker count (or at least 1 for single worker/reload mode)
+      local complete_count=$(grep -c "Application startup complete" "$LOG_DIR/backend.log" 2>/dev/null || echo "0")
+      if [[ $complete_count -ge 1 ]]; then
+        startup_complete=true
+        # For multi-worker mode, wait for all workers to start
+        if [[ $worker_count -gt 1 && $complete_count -ge $worker_count ]]; then
+          break
+        elif [[ $worker_count -eq 1 ]]; then
+          break
+        fi
+      fi
+    fi
+    
+    # If port is listening, we can break early (service is up)
+    if [[ "$port_listening" == "true" ]]; then
+      # But wait a bit more for multi-worker to fully start
+      if [[ $worker_count -eq 1 || $waited -ge $((max_wait / 2)) ]]; then
+        break
+      fi
+    fi
+  done
+  
+  # If port is listening OR startup is complete, consider it successful
+  if [[ "$port_listening" == "true" || "$startup_complete" == "true" ]]; then
+    echo "[INFO] Backend started successfully (waited ${waited}s), logs: $LOG_DIR/backend.log"
+    return 0
+  fi
+  
+  # If we get here, backend didn't start
+  echo "[ERROR] Backend failed to start after ${max_wait}s, checking logs:" >&2
+  if [[ -f "$LOG_DIR/backend.log" ]]; then
+    echo "--- Last 30 lines of backend.log ---" >&2
+    tail -30 "$LOG_DIR/backend.log" >&2
+    echo "--- End of log ---" >&2
+  else
+    echo "[ERROR] Log file not found: $LOG_DIR/backend.log" >&2
+  fi
+  
+  # Check if there's a Python import error or syntax error
+  if grep -q "ModuleNotFoundError\|ImportError\|SyntaxError\|IndentationError" "$LOG_DIR/backend.log" 2>/dev/null; then
+    echo "[ERROR] Python import/syntax error detected. Check dependencies:" >&2
+    echo "  Run: source venv/bin/activate && pip install -r web/requirements.txt" >&2
+  fi
+  
+  exit 1
 }
 
 start_frontend() {

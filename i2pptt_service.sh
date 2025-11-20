@@ -223,22 +223,139 @@ start_frontend() {
     ( cd "$ROOT_DIR/web/frontend"; npm install )
   fi
   
-  ( cd "$ROOT_DIR/web/frontend"; export I2PPTT_VITE_BASE_PATH="$vite_base" VITE_BASE_PATH="$vite_base"; nohup npm run dev -- --host --port "$FRONTEND_PORT" > "$LOG_DIR/frontend.log" 2>&1 & ) >/dev/null 2>&1 &
-  sleep 3
-  if lsof -Pi :"$FRONTEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "[INFO] Frontend started, logs: $LOG_DIR/frontend.log"
-  else
-    echo "[ERROR] Frontend failed, tail logs:" >&2; tail -20 "$LOG_DIR/frontend.log" 2>/dev/null || true; exit 1
+  # Don't clear log immediately - append to preserve history
+  # Start frontend in background
+  ( 
+    cd "$ROOT_DIR/web/frontend"
+    export I2PPTT_VITE_BASE_PATH="$vite_base"
+    export VITE_BASE_PATH="$vite_base"
+    nohup npm run dev -- --host --port "$FRONTEND_PORT" >> "$LOG_DIR/frontend.log" 2>&1
+  ) &
+  
+  # Wait longer for Vite to start (it needs time to compile)
+  local max_wait=20
+  local waited=0
+  local port_listening=false
+  local vite_ready=false
+  
+  # Give it a moment to start writing to log
+  sleep 2
+  waited=2
+  
+  while [[ $waited -lt $max_wait ]]; do
+    sleep 1
+    waited=$((waited + 1))
+    
+    # Check if port is listening
+    if lsof -Pi :"$FRONTEND_PORT" -sTCP:LISTEN -t >/dev/null 2>&1; then
+      port_listening=true
+    fi
+    
+    # Check if Vite is ready (look for "Local:" or "ready in" in logs) - case insensitive
+    if [[ -f "$LOG_DIR/frontend.log" ]]; then
+      # Use case-insensitive grep and check for multiple patterns
+      # Also sync/flush the log file before checking
+      sync "$LOG_DIR/frontend.log" 2>/dev/null || true
+      if grep -qiE "Local:|ready in|VITE.*ready|Network:" "$LOG_DIR/frontend.log" 2>/dev/null; then
+        vite_ready=true
+        break
+      fi
+    fi
+    
+    # If port is listening, we can break early (service is up)
+    if [[ "$port_listening" == "true" && $waited -ge 3 ]]; then
+      break
+    fi
+  done
+  
+  # If port is listening OR vite is ready, consider it successful
+  if [[ "$port_listening" == "true" || "$vite_ready" == "true" ]]; then
+    echo "[INFO] Frontend started successfully (waited ${waited}s), logs: $LOG_DIR/frontend.log"
+    return 0
   fi
+  
+  # If we get here, frontend didn't start
+  echo "[ERROR] Frontend failed to start after ${waited}s, checking logs:" >&2
+  if [[ -f "$LOG_DIR/frontend.log" ]]; then
+    echo "--- Last 30 lines of frontend.log ---" >&2
+    tail -30 "$LOG_DIR/frontend.log" >&2
+    echo "--- End of log ---" >&2
+  else
+    echo "[ERROR] Log file not found: $LOG_DIR/frontend.log" >&2
+  fi
+  
+  # Check for common errors
+  if grep -qE "EADDRINUSE|port.*already in use" "$LOG_DIR/frontend.log" 2>/dev/null; then
+    echo "[ERROR] Port $FRONTEND_PORT is already in use" >&2
+  elif grep -qE "Cannot find module|Error:|Failed" "$LOG_DIR/frontend.log" 2>/dev/null; then
+    echo "[ERROR] Frontend dependency or configuration error detected" >&2
+    echo "  Try: cd web/frontend && npm install" >&2
+  fi
+  
+  exit 1
 }
 
 start_all() { start_backend; start_frontend; }
 stop_backend() { stop_port "$BACKEND_PORT" "Backend"; }
 stop_frontend() { stop_port "$FRONTEND_PORT" "Frontend"; }
 stop_all() { stop_backend; stop_frontend; }
-restart_backend() { stop_backend; sleep 1; start_backend; }
-restart_frontend() { stop_frontend; sleep 1; start_frontend; }
-restart_all() { stop_all; sleep 2; start_all; }
+
+restart_backend() {
+  stop_backend
+  # Wait for port to be fully released
+  local wait_count=0
+  local max_wait=5
+  while [[ $wait_count -lt $max_wait ]]; do
+    if check_port "$BACKEND_PORT"; then
+      break
+    fi
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
+  if [[ $wait_count -ge $max_wait ]]; then
+    echo "[WARN] Port $BACKEND_PORT may still be in use, but proceeding..." >&2
+  fi
+  sleep 1
+  start_backend
+}
+
+restart_frontend() {
+  stop_frontend
+  # Wait for port to be fully released
+  local wait_count=0
+  local max_wait=5
+  while [[ $wait_count -lt $max_wait ]]; do
+    if check_port "$FRONTEND_PORT"; then
+      break
+    fi
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
+  if [[ $wait_count -ge $max_wait ]]; then
+    echo "[WARN] Port $FRONTEND_PORT may still be in use, but proceeding..." >&2
+  fi
+  sleep 1
+  start_frontend
+}
+
+restart_all() {
+  stop_all
+  # Wait for ports to be fully released
+  local wait_count=0
+  local max_wait=5
+  while [[ $wait_count -lt $max_wait ]]; do
+    if check_port "$BACKEND_PORT" && check_port "$FRONTEND_PORT"; then
+      break
+    fi
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
+  if [[ $wait_count -ge $max_wait ]]; then
+    echo "[WARN] Some ports may still be in use, but proceeding..." >&2
+  fi
+  sleep 2
+  start_all
+}
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 {start|stop|restart|status} [backend|frontend|all]" >&2; exit 1; fi
